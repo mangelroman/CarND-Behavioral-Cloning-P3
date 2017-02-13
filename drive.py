@@ -23,6 +23,32 @@ prev_image_array = None
 
 from model import preprocess_image
 
+class SimplePIController:
+    def __init__(self, Kp, Ki):
+        self.Kp = Kp
+        self.Ki = Ki
+        self.set_point = 0.
+        self.error = 0.
+        self.integral = 0.
+
+    def set_desired(self, desired):
+        self.set_point = desired
+
+    def update(self, measurement):
+        # proportional error
+        self.error = self.set_point - measurement
+
+        # integral error
+        self.integral += self.error
+
+        return self.Kp * self.error + self.Ki * self.integral
+
+
+controller = SimplePIController(0.2, 0.004)
+set_speed = 15
+controller.set_desired(set_speed)
+
+
 @sio.on('telemetry')
 def telemetry(sid, data):
     if data:
@@ -37,14 +63,8 @@ def telemetry(sid, data):
         image = Image.open(BytesIO(base64.b64decode(imgString)))
         image_array = preprocess_image(np.asarray(image))
         steering_angle = float(model.predict(image_array[None, :, :, :], batch_size=1))
-        min_speed = 8
-        max_speed = 15
-        if float(speed) < min_speed:
-            throttle = 1.0
-        elif float(speed) > max_speed:
-            throttle = -1.0
-        else:
-            throttle = 0.2
+
+        throttle = controller.update(float(speed))
 
         print(steering_angle, throttle)
         send_control(steering_angle, throttle)
@@ -97,8 +117,7 @@ if __name__ == '__main__':
     keras_version = str(keras_version).encode('utf8')
 
     if model_version != keras_version:
-        print('You are using Keras version ', keras_version,
-            ', but the model was built using ', model_version)
+        print('You are using Keras version ', keras_version, ', but the model was built using ', model_version)
 
     model = load_model(args.model)
 
