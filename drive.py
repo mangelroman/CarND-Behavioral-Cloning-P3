@@ -37,14 +37,14 @@ def telemetry(sid, data):
         image = Image.open(BytesIO(base64.b64decode(imgString)))
         image_array = preprocess_image(np.asarray(image))
         steering_angle = float(model.predict(image_array[None, :, :, :], batch_size=1))
-        min_speed = 15
-        max_speed = 30
+        min_speed = 8
+        max_speed = 15
         if float(speed) < min_speed:
             throttle = 1.0
         elif float(speed) > max_speed:
             throttle = -1.0
         else:
-            throttle = 0.4
+            throttle = 0.2
 
         print(steering_angle, throttle)
         send_control(steering_angle, throttle)
@@ -99,7 +99,7 @@ if __name__ == '__main__':
     if model_version != keras_version:
         print('You are using Keras version ', keras_version,
             ', but the model was built using ', model_version)
-        
+
     model = load_model(args.model)
 
     if args.image_folder != '':
