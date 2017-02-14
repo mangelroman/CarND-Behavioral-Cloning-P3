@@ -16,12 +16,12 @@ from keras.models import load_model
 import h5py
 from keras import __version__ as keras_version
 
+from model import preprocess_image
+
 sio = socketio.Server()
 app = Flask(__name__)
 model = None
 prev_image_array = None
-
-from model import preprocess_image
 
 class SimplePIController:
     def __init__(self, Kp, Ki):
