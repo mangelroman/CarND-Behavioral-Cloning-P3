@@ -7,6 +7,7 @@ from sklearn.model_selection import train_test_split
 from keras.models import Sequential
 from keras.layers import Lambda, Cropping2D, Dense, Dropout, ELU
 from keras.layers import Convolution2D, MaxPooling2D, AveragePooling2D, Flatten
+from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras import backend as K
 
 from data import load_samples, transform_image
@@ -14,21 +15,18 @@ from data import load_samples, transform_image
 imgsize = (160, 320, 3)
 
 croph = (60, 36)
-cropw = (1, 1)
+cropw = (0, 0)
 
-inputsize = (64, 64, 3)
+def preprocess_image(image, newshape):
+    h, w, c = image.shape
+    image = image[croph[0]:h-croph[1], cropw[0]:w-cropw[1],:]
+    return cv2.resize(image, (newshape[1], newshape[0]), interpolation=cv2.INTER_AREA)
 
-def preprocess_image(image):
-    image = image[croph[0]:-croph[1], cropw[0]:-cropw[1],:]
-    return cv2.resize(image, (inputsize[0], inputsize[1]), interpolation=cv2.INTER_AREA)
+def normalize(images):
+    # Normalize to keep values in the [-1, 1] range
+    return images.astype(np.float32) / 127.5 - 1.0
 
-def normalize_image(image):
-    cmin = K.min(image, axis=[1,2,3], keepdims=True)
-    cmax = K.max(image, axis=[1,2,3], keepdims=True)
-
-    return 2 * (image - cmin) / (cmax - cmin) - 1.0
-
-def generator(samples, datadir, batch_size):
+def generator(samples, datadir, batch_size, input_shape):
     samples = shuffle(samples)
     n_samples = len(samples)
     while 1: # Loop forever so the generator never terminates
@@ -36,21 +34,22 @@ def generator(samples, datadir, batch_size):
             samples_batch = samples[offset:offset+batch_size]
             n_batch = len(samples_batch)
             y_batch = np.empty(n_batch, dtype=float)
-            X_batch = np.empty([n_batch, inputsize[0], inputsize[1], inputsize[2]], dtype='uint8')
+            X_batch = np.empty([n_batch, input_shape[0], input_shape[1], input_shape[2]], dtype='uint8')
             for i, sample in enumerate(samples_batch):
                 imagepath = os.path.join(datadir, sample[0])
                 image = cv2.imread(imagepath)
-                image = preprocess_image(image)
-                X_batch[i] = transform_image(image, sample[2])
+                image = transform_image(image, sample[2])
+                X_batch[i] = preprocess_image(image, input_shape)
                 y_batch[i] = sample[1]
+            X_batch = normalize(X_batch)
             yield X_batch, y_batch
 
 def get_manet_model():
+    input_shape = (64, 64, 3)
     model = Sequential()
-    #model.add(Cropping2D(cropping=(crop_height, crop_width), input_shape=image_shape))
-    model.add(Lambda(normalize_image, input_shape=inputsize))
-    #model.add(AveragePooling2D(pool_size=(2, 2)))
-    model.add(Convolution2D(8,5,5, activation='relu', border_mode='valid'))
+    #model.add(Cropping2D(cropping=(crop_height, crop_width), input_shape=input_shape))
+    #model.add(Lambda(normalize, input_shape=input_shape))
+    model.add(Convolution2D(8,5,5, input_shape=input_shape, activation='relu', border_mode='valid'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
     model.add(Convolution2D(16,5,5, activation='relu', border_mode='valid'))
     model.add(MaxPooling2D(pool_size=(2, 2)))
@@ -63,14 +62,12 @@ def get_manet_model():
     model.add(Dropout(0.25))
     model.add(Dense(1))
     model.summary()
-    return model
+    return model, input_shape
 
 def get_nvidia_model():
+    input_shape = (66, 200, 3)
     model = Sequential()
-    #model.add(Cropping2D(cropping=(crop_height, crop_width), input_shape=image_shape))
-    model.add(Lambda(normalize_image))
-    # NVIDIA MODEL ARCHITECTURE STARTS HERE
-    model.add(Convolution2D(24, 5, 5, border_mode='valid', subsample=(2,2), activation='relu'))
+    model.add(Convolution2D(24, 5, 5, input_shape=input_shape, border_mode='valid', subsample=(2,2), activation='relu'))
     model.add(Convolution2D(36, 5, 5, border_mode='valid', subsample=(2,2), activation='relu'))
     model.add(Convolution2D(48, 5, 5, border_mode='valid', subsample=(2,2), activation='relu'))
     model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='relu'))
@@ -85,14 +82,12 @@ def get_nvidia_model():
     model.add(Dense(10, activation='relu'))
     model.add(Dense(1))
     model.summary()
-    return model
+    return model, input_shape
 
 def get_comma_model():
+    input_shape = (160, 320, 3)
     model = Sequential()
-    #model.add(Cropping2D(cropping=(crop_height, crop_width), input_shape=image_shape))
-    model.add(Lambda(normalize_image))
-    # COMMA.AI MODEL ARCHITECTURE STARTS HERE
-    model.add(Convolution2D(16, 8, 8, subsample=(4, 4), border_mode="same"))
+    model.add(Convolution2D(16, 8, 8, input_shape=input_shape, subsample=(4, 4), border_mode="same"))
     model.add(ELU())
     model.add(Convolution2D(32, 5, 5, subsample=(2, 2), border_mode="same"))
     model.add(ELU())
@@ -105,7 +100,7 @@ def get_comma_model():
     model.add(ELU())
     model.add(Dense(1))
     model.summary()
-    return model
+    return model, input_shape
 
 def get_model(name):
     return {'manet' : get_manet_model, 'nvidia' : get_nvidia_model, 'comma' : get_comma_model} [name] ()
@@ -130,17 +125,27 @@ if __name__ == '__main__':
     samples_train, samples_val = train_test_split(samples, test_size=0.2, random_state=17)
 
     # compile and train the model using the generator function
-    train_generator = generator(samples_train, args.datadir, args.batch)
-    validation_generator = generator(samples_val, args.datadir, args.batch)
+    model, input_shape = get_model(args.model)
+    model.compile(loss='mse', optimizer='adam')
 
-    model = get_model(args.model)
+    #with open(args.model + ".json", "w") as file:
+    #    file.write(model.to_json())
 
     print("Training model with {} parameters...".format(model.count_params()))
-    model.compile(loss='mse', optimizer='adam')
+    train_generator = generator(samples_train, args.datadir, args.batch, input_shape)
+    validation_generator = generator(samples_val, args.datadir, args.batch, input_shape)
+
+    # Early stopping to help test longer epochs
+    earlystopper = EarlyStopping(monitor='val_loss', patience=4)
+
+    # saves the model weights after each epoch if the validation loss decreased
+    checkpointer = ModelCheckpoint(filepath=args.model + ".h5", verbose=0, save_best_only=True)# , save_weights_only=True)
+
     model.fit_generator(train_generator,
                         samples_per_epoch=len(samples_train),
                         validation_data=validation_generator,
                         nb_val_samples=len(samples_val),
-                        nb_epoch=args.epochs)
+                        nb_epoch=args.epochs,
+                        callbacks=[checkpointer, earlystopper])
 
-    model.save('model.h5')
+    K.clear_session()

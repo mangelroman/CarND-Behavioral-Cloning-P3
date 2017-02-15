@@ -12,15 +12,16 @@ from PIL import Image
 from flask import Flask
 from io import BytesIO
 
-from keras.models import load_model
+from keras.models import load_model, model_from_json
 import h5py
 from keras import __version__ as keras_version
 
-from model import preprocess_image
+from model import preprocess_image, normalize
 
 sio = socketio.Server()
 app = Flask(__name__)
 model = None
+input_shape = None
 prev_image_array = None
 
 class SimplePIController:
@@ -61,7 +62,7 @@ def telemetry(sid, data):
         # The current image from the center camera of the car
         imgString = data["image"]
         image = Image.open(BytesIO(base64.b64decode(imgString)))
-        image_array = preprocess_image(np.asarray(image))
+        image_array = normalize(preprocess_image(np.asarray(image), input_shape))
         steering_angle = float(model.predict(image_array[None, :, :, :], batch_size=1))
 
         throttle = controller.update(float(speed))
@@ -100,8 +101,13 @@ if __name__ == '__main__':
     parser.add_argument(
         'model',
         type=str,
-        help='Path to model h5 file. Model should be on the same path.'
+        help='Path to saved model h5 file.'
     )
+    #parser.add_argument(
+    #    'weights',
+    #    type=str,
+    #    help='Path to pretrained weights h5 file.'
+    #)
     parser.add_argument(
         'image_folder',
         type=str,
@@ -119,7 +125,14 @@ if __name__ == '__main__':
     if model_version != keras_version:
         print('You are using Keras version ', keras_version, ', but the model was built using ', model_version)
 
+    #with open(args.model, 'r') as modelfile:
+    #    model = model_from_json(modelfile.read())
+    #model.compile(loss='mse', optimizer='adam')
+    #input_shape = model.layers[0].input_shape[1:]
+    #model.load_weights(args.weights)
+
     model = load_model(args.model)
+    input_shape = model.layers[0].input_shape[1:]
 
     if args.image_folder != '':
         print("Creating image folder at {}".format(args.image_folder))
