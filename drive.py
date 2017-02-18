@@ -2,6 +2,7 @@ import argparse
 import base64
 from datetime import datetime
 import os
+import time
 import shutil
 
 import numpy as np
@@ -15,6 +16,8 @@ from io import BytesIO
 from keras.models import load_model, model_from_json
 import h5py
 from keras import __version__ as keras_version
+from keras import backend as K
+
 
 from model import preprocess_image, normalize
 
@@ -53,6 +56,7 @@ controller.set_desired(set_speed)
 @sio.on('telemetry')
 def telemetry(sid, data):
     if data:
+        start = time.time()
         # The current steering angle of the car
         steering_angle = data["steering_angle"]
         # The current throttle of the car
@@ -62,13 +66,14 @@ def telemetry(sid, data):
         # The current image from the center camera of the car
         imgString = data["image"]
         image = Image.open(BytesIO(base64.b64decode(imgString)))
-        image_array = normalize(preprocess_image(np.asarray(image), input_shape))
+        image_array = preprocess_image(np.asarray(image), input_shape)
         steering_angle = float(model.predict(image_array[None, :, :, :], batch_size=1))
 
         throttle = controller.update(float(speed))
 
-        print(steering_angle, throttle)
         send_control(steering_angle, throttle)
+
+        print("{:8.4f} | {:8.4f} | {:.6f}".format(steering_angle, throttle, time.time() - start))
 
         # save frame
         if args.image_folder != '':
@@ -103,11 +108,6 @@ if __name__ == '__main__':
         type=str,
         help='Path to saved model h5 file.'
     )
-    #parser.add_argument(
-    #    'weights',
-    #    type=str,
-    #    help='Path to pretrained weights h5 file.'
-    #)
     parser.add_argument(
         'image_folder',
         type=str,
@@ -124,12 +124,6 @@ if __name__ == '__main__':
 
     if model_version != keras_version:
         print('You are using Keras version ', keras_version, ', but the model was built using ', model_version)
-
-    #with open(args.model, 'r') as modelfile:
-    #    model = model_from_json(modelfile.read())
-    #model.compile(loss='mse', optimizer='adam')
-    #input_shape = model.layers[0].input_shape[1:]
-    #model.load_weights(args.weights)
 
     model = load_model(args.model)
     input_shape = model.layers[0].input_shape[1:]
@@ -150,3 +144,4 @@ if __name__ == '__main__':
 
     # deploy as an eventlet WSGI server
     eventlet.wsgi.server(eventlet.listen(('', 4567)), app)
+    K.clear_session()
