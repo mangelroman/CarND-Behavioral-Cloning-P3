@@ -49,14 +49,13 @@ class SimplePIController:
 
 
 controller = SimplePIController(0.2, 0.004)
-set_speed = 15
-controller.set_desired(set_speed)
-
 
 @sio.on('telemetry')
 def telemetry(sid, data):
     if data:
-        start = time.time()
+        start = time.clock()
+        timestamp = datetime.utcnow().strftime('%Y_%m_%d_%H_%M_%S_%f')[:-3]
+
         # The current steering angle of the car
         steering_angle = data["steering_angle"]
         # The current throttle of the car
@@ -65,21 +64,23 @@ def telemetry(sid, data):
         speed = data["speed"]
         # The current image from the center camera of the car
         imgString = data["image"]
-        image = Image.open(BytesIO(base64.b64decode(imgString)))
-        image_array = preprocess_image(np.asarray(image), input_shape)
-        steering_angle = float(model.predict(image_array[None, :, :, :], batch_size=1))
+        image = np.asarray(Image.open(BytesIO(base64.b64decode(imgString))))
+
+        image_array = preprocess_image(image, input_shape)
+        steering_pred = float(model.predict(image_array[None, :, :, :], batch_size=1))
 
         throttle = controller.update(float(speed))
+        send_control(steering_pred, throttle)
 
-        send_control(steering_angle, throttle)
+        print("{} {:8.4f} | {:8.4f} | {:8.4f} | {:.6f} ".format(timestamp, float(steering_angle), steering_pred, throttle, time.clock() - start))
 
-        print("{:8.4f} | {:8.4f} | {:.6f}".format(steering_angle, throttle, time.time() - start))
+        steering_angle = steering_pred
 
         # save frame
         if args.image_folder != '':
-            timestamp = datetime.utcnow().strftime('%Y_%m_%d_%H_%M_%S_%f')[:-3]
             image_filename = os.path.join(args.image_folder, timestamp)
             image.save('{}.jpg'.format(image_filename))
+
     else:
         # NOTE: DON'T EDIT THIS.
         sio.emit('manual', data={}, skip_sid=True)
@@ -104,6 +105,12 @@ def send_control(steering_angle, throttle):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Remote Driving')
     parser.add_argument(
+        '--speed',
+        type=int,
+        help='Set driving speed',
+        default=15
+    )
+    parser.add_argument(
         'model',
         type=str,
         help='Path to saved model h5 file.'
@@ -127,6 +134,8 @@ if __name__ == '__main__':
 
     model = load_model(args.model)
     input_shape = model.layers[0].input_shape[1:]
+
+    controller.set_desired(args.speed)
 
     if args.image_folder != '':
         print("Creating image folder at {}".format(args.image_folder))
