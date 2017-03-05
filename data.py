@@ -4,20 +4,22 @@ import cv2
 import numpy as np
 from PIL import Image
 
-DISCARD_PROB = 0.9
+DISCARD_PROB = 0.85
+TRANSLATE_PROB = 0.5
 SHADOW_PROB = 0
-LR_CORRECTION = 0.16
-MAX_SHIFT = 20
-SHIFT_CORRECTION = LR_CORRECTION / 30
+
+LR_CORRECTION = 0.18
+MAX_TRANSLATION = 30
+TRANS_CORRECTION = LR_CORRECTION / 30
 
 def shadow_image(image, x1, x2):
     h, w, _ = image.shape
     shadow_image = np.copy(image)
-    m = h / (x2 - x1)
-    b = - m * x1
-    for i in range(h):
-        c = int((i - b) / m)
-        shadow_image[i, :c, :] //= 2
+    m = (x2 - x1) / h
+    b = x1
+    for y in range(h):
+        c = int(m * y + b)
+        shadow_image[y, :c, :] //= 2
     return shadow_image
 
 def translate_image(img, delta):
@@ -34,45 +36,42 @@ class Sample:
     def __init__(self, path, steering):
         self.path = path
         self.steering = steering
-        self.flipped = False
         self.offset = 0
+        self.flipped = False
         self.x1_shadow = 0
         self.x2_shadow = 0
 
     def get_image(self):
         # Reading image with the same method as drive.py to avoid color space inconsistencies
         image = np.asarray(Image.open(self.path))
-        #image = cv2.imread(self.path)
         if (self.offset != 0):
             image = translate_image(image, self.offset)
         if (self.flipped):
             image = cv2.flip(image, 1)
-        if (self.x1_shadow != 0) and (self.x2_shadow != 0):
+        if (self.x1_shadow != 0) or (self.x2_shadow != 0):
             image = shadow_image(image, self.x1_shadow, self.x2_shadow)
         return image
 
     def get_steering(self):
         return self.steering
 
+    def translate(self):
+        self.offset = np.random.randint(-(MAX_TRANSLATION+1),(MAX_TRANSLATION+1))
+        self.steering += self.offset * TRANS_CORRECTION
+
     def flip(self):
         self.flipped = not self.flipped
         self.steering = -self.steering
 
-    def translate(self):
-        self.offset = np.random.randint(-(MAX_SHIFT+1),(MAX_SHIFT+1))
-        self.steering += self.offset * SHIFT_CORRECTION
-
     def shadow(self):
-        if(np.random.choice([True, False], p=[SHADOW_PROB, 1 - SHADOW_PROB])):
-            self.x1_shadow, self.x2_shadow = np.random.choice(320, 2, replace=False)
-        else:
-            self.x1_shadow = 0
-            self.x2_shadow = 0
+        self.x1_shadow, self.x2_shadow = np.random.choice(320, 2, replace=False)
 
     def clone(self):
         newsample = Sample(self.path, self.steering)
-        newsample.flipped = self.flipped
         newsample.offset = self.offset
+        newsample.flipped = self.flipped
+        newsample.x1_shadow = self.x1_shadow
+        newsample.x2_shadow = self.x2_shadow
         return newsample
 
 def get_relative_path(datadir, fullpath):
@@ -81,18 +80,19 @@ def get_relative_path(datadir, fullpath):
     lastpath = os.path.join(datadir, os.path.join(dirname, filename))
     return os.path.relpath(lastpath)
 
-def augment_samples(samples):
-    # Flip all samples to ensure a perfect balance between right and left steering angles
+def translate_samples(samples, prob=TRANSLATE_PROB):
+    # Randomly add new translated samples to the samples array
     n_samples = len(samples)
-    for i in range(n_samples):
+    indexes = np.random.choice(n_samples, size=int(n_samples * prob), replace=False)
+
+    for i in indexes:
         sample = samples[i].clone()
         sample.translate()
-        sample.shadow()
         samples.append(sample)
     return samples
 
-def balance_samples(samples):
-    # Flip all samples to ensure a perfect balance between right and left steering angles
+def flip_samples(samples):
+    # Add flipped samples to the samples array
     n_samples = len(samples)
     for i in range(n_samples):
         sample = samples[i].clone()
@@ -100,28 +100,44 @@ def balance_samples(samples):
         samples.append(sample)
     return samples
 
-def load_samples(datadir):
+def shadow_samples(samples, prob=SHADOW_PROB):
+    # Randomly add new translated samples to the samples array
+    n_samples = len(samples)
+    indexes = np.random.choice(n_samples, size=int(n_samples * prob), replace=False)
+
+    for i in indexes:
+        samples[i].shadow()
+    return samples
+
+def load_samples(datadir, discard=DISCARD_PROB):
+    # Read samples from disk and prepare metadata
     samples = []
+    samples_zero = []
     logpath = os.path.join(datadir, 'driving_log.csv')
     with open(logpath) as csvfile:
         reader = csv.reader(csvfile)
-        # Skip headings line
-        next(reader)
         for line in reader:
             steering = float(line[3])
-
-            # Randomly discard 0 steering samples
-            if (steering == 0):
-                discard = np.random.choice([True, False], p=[DISCARD_PROB, 1 - DISCARD_PROB])
-                if discard:
-                    continue
 
             centerpath = get_relative_path(datadir, line[0].strip())
             leftpath = get_relative_path(datadir, line[1].strip())
             rightpath = get_relative_path(datadir, line[2].strip())
 
-            samples.append(Sample(centerpath, steering))
-            samples.append(Sample(leftpath, steering + LR_CORRECTION))
-            samples.append(Sample(rightpath, steering - LR_CORRECTION))
+            # Store samples with 0 steering separately
+            if (steering == 0):
+                target_array = samples_zero
+            else:
+                target_array = samples
+
+            target_array.append(Sample(centerpath, steering))
+            target_array.append(Sample(leftpath, steering + LR_CORRECTION))
+            target_array.append(Sample(rightpath, steering - LR_CORRECTION))
+
+    # Discard 0 steering samples based on selected probability
+    n_zero = len(samples_zero)
+    indexes = np.random.choice(n_zero, size=int(n_zero * (1 - discard)), replace=False)
+
+    for i in indexes:
+        samples.append(samples_zero[i])
 
     return samples

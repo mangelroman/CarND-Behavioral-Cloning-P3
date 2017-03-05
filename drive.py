@@ -18,7 +18,6 @@ import h5py
 from keras import __version__ as keras_version
 from keras import backend as K
 
-
 from model import preprocess_image, normalize
 
 sio = socketio.Server()
@@ -38,6 +37,10 @@ class SimplePIController:
     def set_desired(self, desired):
         self.set_point = desired
 
+    def reset(self):
+        self.error = 0.
+        self.integral = 0.
+
     def update(self, measurement):
         # proportional error
         self.error = self.set_point - measurement
@@ -48,7 +51,7 @@ class SimplePIController:
         return self.Kp * self.error + self.Ki * self.integral
 
 
-controller = SimplePIController(0.2, 0.004)
+controller = SimplePIController(0.2, 0.001)
 
 @sio.on('telemetry')
 def telemetry(sid, data):
@@ -64,9 +67,9 @@ def telemetry(sid, data):
         speed = data["speed"]
         # The current image from the center camera of the car
         imgString = data["image"]
-        image = np.asarray(Image.open(BytesIO(base64.b64decode(imgString))))
+        image = Image.open(BytesIO(base64.b64decode(imgString)))
 
-        image_array = preprocess_image(image, input_shape)
+        image_array = preprocess_image(np.asarray(image), input_shape)
         steering_pred = float(model.predict(image_array[None, :, :, :], batch_size=1))
 
         throttle = controller.update(float(speed))
@@ -90,6 +93,7 @@ def telemetry(sid, data):
 def connect(sid, environ):
     print("connect ", sid)
     send_control(0, 0)
+    controller.reset()
 
 
 def send_control(steering_angle, throttle):
@@ -108,7 +112,7 @@ if __name__ == '__main__':
         '--speed',
         type=int,
         help='Set driving speed',
-        default=15
+        default=20
     )
     parser.add_argument(
         'model',

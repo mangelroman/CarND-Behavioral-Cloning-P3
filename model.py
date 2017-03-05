@@ -2,8 +2,11 @@ import os
 import argparse
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt
+
 from sklearn.utils import shuffle
 from sklearn.model_selection import train_test_split
+
 from keras.models import Sequential
 from keras.layers import Lambda, Cropping2D, Dense, Dropout, ELU
 from keras.layers import Convolution2D, MaxPooling2D, AveragePooling2D, Flatten
@@ -11,9 +14,10 @@ from keras.regularizers import l2
 from keras.optimizers import Adam
 from keras.layers.advanced_activations import ELU
 from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
+from keras.utils.visualize_util import plot
 from keras import backend as K
 
-from data import Sample, load_samples, augment_samples, balance_samples
+from data import Sample, load_samples, translate_samples, flip_samples, shadow_samples
 
 IMAGE_SHAPE = (160, 320, 3)
 CROP_HEIGHT = (58, 22)
@@ -25,13 +29,12 @@ LEARNING_RATE = 0.001
 def preprocess_image(image, newshape):
     h, w, c = image.shape
     image = image[CROP_HEIGHT[0]:h-CROP_HEIGHT[1], CROP_WIDTH[0]:w-CROP_WIDTH[1],:]
-    #image = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
     return cv2.resize(image, (newshape[1], newshape[0]), interpolation=cv2.INTER_AREA)
 
-def minmax_normalize(images):
-    cmin = K.min(images, axis=[1, 2, 3], keepdims=True)
-    cmax = K.max(images, axis=[1, 2, 3], keepdims=True)
-    return 2 * (images - cmin) / (cmax - cmin) - 1.0
+# def minmax_normalize(images):
+#     cmin = K.min(images, axis=[1, 2, 3], keepdims=True)
+#     cmax = K.max(images, axis=[1, 2, 3], keepdims=True)
+#     return 2 * (images - cmin) / (cmax - cmin) - 1.0
 
 def normalize(images):
     # Normalize to keep values in the [-1, 1] range
@@ -62,9 +65,9 @@ def get_simple_model():
     model.add(Convolution2D(32,3,3, activation='relu', border_mode='valid'))
     model.add(Flatten())
     model.add(Dropout(0.2))
-    model.add(Dense(256, activation='relu', W_regularizer=l2(REG_PARAM)))
-    model.add(Dropout(0.2))
-    model.add(Dense(64, activation='relu', W_regularizer=l2(REG_PARAM)))
+    model.add(Dense(256, activation='relu')) #, W_regularizer=l2(REG_PARAM)))
+    model.add(Dropout(0.4))
+    model.add(Dense(64, activation='relu')) #, W_regularizer=l2(REG_PARAM)))
     model.add(Dense(1))
     return model, input_shape
 
@@ -75,14 +78,15 @@ def get_nvidia_model():
     model.add(Convolution2D(24, 5, 5, border_mode='valid', subsample=(2,2), activation='relu'))
     model.add(Convolution2D(36, 5, 5, border_mode='valid', subsample=(2,2), activation='relu'))
     model.add(Convolution2D(48, 5, 5, border_mode='valid', subsample=(2,2), activation='relu'))
+    model.add(Dropout(0.2))
     model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='relu'))
     model.add(Convolution2D(64, 3, 3, border_mode='valid', activation='relu'))
     model.add(Flatten())
-    model.add(Dropout(0.4))
+    model.add(Dropout(0.3))
     model.add(Dense(1164, W_regularizer=l2(REG_PARAM), activation='relu'))
-    model.add(Dropout(0.2))
+    model.add(Dropout(0.4))
     model.add(Dense(100, W_regularizer=l2(REG_PARAM), activation='relu'))
-    #model.add(Dropout(0.2))
+    model.add(Dropout(0.5))
     model.add(Dense(50, W_regularizer=l2(REG_PARAM), activation='relu'))
     model.add(Dense(10, W_regularizer=l2(REG_PARAM), activation='relu'))
     model.add(Dense(1))
@@ -125,21 +129,31 @@ if __name__ == '__main__':
     model, input_shape = get_model(args.model)
     model.compile(loss='mse', optimizer=Adam(lr=LEARNING_RATE))
     model.summary()
+    #plot(model, show_shapes=True, to_file="{}.png".format(args.model))
 
+    print("Loading training set... ", end='')
     samples_train = load_samples(args.traindir)
+    print("{} samples".format(len(samples_train)))
 
     if (len(args.valdir) > 0):
+        print("Loading validation set... ", end='')
         samples_val = load_samples(args.valdir)
+        print("{} samples".format(len(samples_val)))
     else:
-        print("Splitting training and validation sets...")
+        print("Splitting training and validation sets... ", end='')
+        samples_train = shuffle(samples_train)
         samples_train, samples_val = train_test_split(samples_train, test_size=0.2, random_state=43)
+        print("{}/{} samples".format(len(samples_train), len(samples_val)))
 
-    print("Augmenting training set...")
-    augment_samples(samples_train)
+    print("Augmenting training set... {} -> ".format(len(samples_train)), end='')
+    translate_samples(samples_train)
+    flip_samples(samples_train)
+    shadow_samples(samples_train)
+    print("{} samples".format(len(samples_train)))
 
-    print("Balancing training and validation sets...")
-    balance_samples(samples_train)
-    balance_samples(samples_val)
+    print("Augmenting validation set... {} -> ".format(len(samples_val)), end='')
+    flip_samples(samples_val)
+    print("{} samples".format(len(samples_val)))
 
     print("Training model with {} parameters...".format(model.count_params()))
     train_generator = generator(samples_train, args.batch, input_shape)
@@ -152,13 +166,23 @@ if __name__ == '__main__':
     checkpointer = ModelCheckpoint(filepath=args.outfile, verbose=0, save_best_only=True)
 
     # Saves TensorBoard data for model visualization
-    #tensorboarder = TensorBoard(write_images=True)
+    tensorboarder = TensorBoard(write_images=True)
 
-    model.fit_generator(train_generator,
-                        samples_per_epoch=len(samples_train),
-                        validation_data=validation_generator,
-                        nb_val_samples=len(samples_val),
-                        nb_epoch=args.epochs,
-                        callbacks=[checkpointer, earlystopper]) #, tensorboarder])
+    history_object = model.fit_generator(
+        train_generator,
+        samples_per_epoch=len(samples_train),
+        validation_data=validation_generator,
+        nb_val_samples=len(samples_val),
+        nb_epoch=args.epochs,
+        callbacks=[checkpointer, earlystopper, tensorboarder])
+
+    # Plot the training and validation loss for each epoch
+    plt.plot(history_object.history['loss'])
+    plt.plot(history_object.history['val_loss'])
+    plt.title('model mean squared error loss')
+    plt.ylabel('mean squared error loss')
+    plt.xlabel('epoch')
+    plt.legend(['training set', 'validation set'], loc='upper right')
+    plt.show()
 
     K.clear_session()
