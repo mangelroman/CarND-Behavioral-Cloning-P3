@@ -149,6 +149,7 @@ fully connected 1 (Dense)                (None, 64)            (None, 1)        
 Total params: 230,033
 </pre>
 
+![alt text](./examples/simple.png "Simple model")
 
 I also trained the 'nvidia' model for comparison purposes (model.py lines 73-92) with the following layers:
 
@@ -189,8 +190,7 @@ fully connected 1 (Dense)                (None, 10)            (None, 1)        
 Total params: 1,595,511
 </pre>
 
-Here it is a visualization of both architectures:
-![alt text](./examples/simple.png "Simple model")![alt text](./examples/nvidia.png "NVIDIA model")
+![alt text](./examples/nvidia.png "NVIDIA model")
 
 #### 3. Creation of the Training Set & Training Process
 
